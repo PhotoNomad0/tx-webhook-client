@@ -152,7 +152,7 @@ def handle(event, context):
     print('Finished deploying to cdn_bucket.')
 
     print('Triggering Door43 Deployer')
-    url = '{0}/deploy'.format(env_vars['api_url'])
+    url = '{0}/door43/deploy'.format(env_vars['api_url'])
     headers = {"content-type": "application/json"}
     print('Making request to {0} with payload:'.format(url))
     print(job)
