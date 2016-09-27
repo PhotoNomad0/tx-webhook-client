@@ -146,6 +146,8 @@ def handle(event, context):
     print('Zipping files from {0} to {1}...'.format(output_dir, zip_filepath), end=' ')
     for filename in files:
         add_file_to_zip(zip_filepath, filename, os.path.basename(filename))
+    if os.path.isfile(manifest_filepath):
+        add_file_to_zip(zip_filepath, manifest_filepath, os.path.basename(manifest_filepath))
     print('finished.')
 
     # 4) Upload zipped file to the S3 bucket (you may want to do some try/catch and give an error if fails back to Gogs)

@@ -27,3 +27,4 @@ deploy:
   script: ./apex deploy --env master
   on:
     branch: master
+
