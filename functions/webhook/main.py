@@ -21,7 +21,7 @@ from datetime import datetime
 # Functions from unfoldingWord libraries
 from general_tools.file_utils import unzip, add_file_to_zip, make_dir, write_file
 from general_tools.url_utils import download_file
-
+from aws_tools.s3_handler import  S3Handler
 
 def handle(event, context):
     # Getting data from payload which is the JSON that was sent from tx-manager
@@ -152,9 +152,9 @@ def handle(event, context):
 
     # 4) Upload zipped file to the S3 bucket (you may want to do some try/catch and give an error if fails back to Gogs)
     print('Uploading {0} to {1}...'.format(zip_filepath, pre_convert_bucket), end=' ')
-    s3_client = boto3.client('s3')
-    file_key = "tx-webhook-client/"+zip_filename
-    s3_client.upload_file(zip_filepath, pre_convert_bucket, file_key)
+    s3_handler = S3Handler(pre_convert_bucket)
+    file_key = "preconvert/"+zip_filename
+    s3_handler.upload_file(zip_filepath, file_key)
     print('finished.')
 
     # Send job request to tx-manager
@@ -186,14 +186,15 @@ def handle(event, context):
         raise Exception('Bad request: unable to convert')
 
     if 'errorMessage' in response:
-        raise Exception('Bad request: '.format(response['errorMessage']))
+        raise Exception('Bad request: {0}'.format(response['errorMessage']))
 
     json_data = json.loads(response.text)
-    print("json:")
-    print(json_data)
+
+    if 'errorMessage' in json_data:
+        raise Exception('Bad request: {0}'.format(json_data['errorMessage']))
 
     if 'job' not in json_data:
-        raise Exception('Bad request: Did not receive a response from the tX Manager')
+        raise Exception('Bad request: tX Manager did not return any info about the job request.')
 
     build_log_json = {
         'job_id': json_data['job']['job_id'],
@@ -221,25 +222,21 @@ def handle(event, context):
     # Upload files to S3:
 
     # S3 location vars
+    cdn_handler = S3Handler(cdn_bucket)
     s3_commit_key = 'u/{0}'.format(identifier)
-    s3_resource = boto3.resource('s3')
-    bucket = s3_resource.Bucket(cdn_bucket)
 
     # Remove everything in the bucket with the s3_commit_key prefix so old files are removed, if any
-    for obj in bucket.objects.filter(Prefix=s3_commit_key):
-        s3_resource.Object(bucket.name, obj.key).delete()
+    for obj in cdn_handler.get_objects(prefix=s3_commit_key):
+        cdn_handler.delete_file(obj.key)
 
     # Make a build_log.json file with this repo and commit data for later processing, upload to S3
     build_log_file = os.path.join(tempfile.gettempdir(), 'build_log_request.json')
     write_file(build_log_file, build_log_json)
-    bucket.upload_file(build_log_file, s3_commit_key+'/build_log.json', ExtraArgs={'ContentType': 'application/json', 'CacheControl': 'max-age=0'})
-    print('Uploaded the following content from {0} to {1}/build_log.json'.format(build_log_file, s3_commit_key))
-    print(build_log_json)
+    cdn_handler.upload_file(build_log_file, s3_commit_key+'/build_log.json', 0)
 
     # Upload the manifest.json file to the cdn_bucket if it exists
     if os.path.isfile(manifest_filepath):
-        bucket.upload_file(manifest_filepath, s3_commit_key+'/manifest.json', ExtraArgs={'ContentType': 'application/json', 'CacheControl': 'max-age=0'})
-        print('Uploaded the manifest.json file to {0}/manifest.json'.format(s3_commit_key))
+        cdn_handler.upload_file(manifest_filepath, s3_commit_key+'/manifest.json', 0)
 
     # If there was an error, in order to trigger a 400 error in the API Gateway, we need to raise an
     # exception with the returned 'errorMessage' because the API Gateway needs to see 'Bad Request:' in the string

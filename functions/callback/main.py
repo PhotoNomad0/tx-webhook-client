@@ -15,7 +15,7 @@ from mimetypes import MimeTypes
 # Functions from unfoldingWord libraries
 from general_tools.file_utils import unzip, write_file
 from general_tools.url_utils import download_file, get_url
-
+from aws_tools.s3_handler import S3Handler
 
 def handle(event, context):
     # Getting data from payload which is the JSON that was sent from tx-manager
@@ -31,17 +31,14 @@ def handle(event, context):
     # production and testing, thus it is an environment variable the API Gateway gives us
     if 'cdn_bucket' not in env_vars:
         raise Exception('"cdn_bucket" was not in payload')
-    cdn_bucket = env_vars['cdn_bucket']
+    cdn_handler = S3Handler(env_vars['cdn_bucket'])
 
     if 'identifier' not in job or not job['identifier']:
         raise Exception('"identifier" not in payload')
 
-    user, repo, commit = job['identifier'].split('/')
+    owner_name, repo_name, commit_id = job['identifier'].split('/')
 
-    s3_commit_key = 'u/{0}/{1}/{2}'.format(user, repo, commit)  # The identifier is how to know which username/repo/commit this callback goes to
-
-    s3_resource = boto3.resource('s3')
-    bucket = s3_resource.Bucket(cdn_bucket)
+    s3_commit_key = 'u/{0}/{1}/{2}'.format(owner_name, repo_name, commit_id)  # The identifier is how to know which username/repo/commit this callback goes to
 
     # Download the ZIP file of the converted files
     converted_zip_url = job['output']
@@ -62,20 +59,15 @@ def handle(event, context):
         print('finished.')
 
     # Upload all files to the cdn_bucket with the key of <user>/<repo_name>/<commit> of the repo
-    mime = MimeTypes()
     for root, dirs, files in os.walk(unzip_dir):
         for f in sorted(files):
             path = os.path.join(root, f)
             key = s3_commit_key + path.replace(unzip_dir, '')
-            mime_type = mime.guess_type(path)[0]
-            if not mime_type:
-                mime_type = "text/html"
-            print('Uploading {0} to {1}, mime_type: {2}'.format(f, key, mime_type))
-            bucket.upload_file(path, key, ExtraArgs={'ContentType': mime_type, 'CacheControl': 'max-age=0'})
+            print('Uploading {0} to {1}'.format(f, key))
+            cdn_handler.upload_file(path, key)
 
     # Now download the existing build_log.json file, update it and upload it back to S3
-    s3_file = s3_resource.Object(cdn_bucket, s3_commit_key+'/build_log.json')
-    build_log_json = json.loads(s3_file.get()['Body'].read())
+    build_log_json = cdn_handler.get_json(s3_commit_key+'/buid_log.json')
 
     build_log_json['started_at'] = job['started_at']
     build_log_json['ended_at'] = job['ended_at']
@@ -99,30 +91,18 @@ def handle(event, context):
 
     build_log_file = os.path.join(tempfile.gettempdir(), 'build_log_finished.json')
     write_file(build_log_file, build_log_json)
-    bucket.upload_file(build_log_file, s3_commit_key+'/build_log.json', ExtraArgs={'ContentType': 'application/json', 'CacheControl': 'max-age=0'})
-    print('Uploaded the following content from {0} to {1}/build_log.json'.format(build_log_file, s3_commit_key))
-    print(build_log_json)
-
-    # Now we update, or generate, the commits.json for the repo which has all the commits
-    s3_repo_key = 'u/{0}/{1}'.format(user, repo)
-    project_url = '{0}/{1}/project.json'.format(env_vars['cdn_url'], s3_repo_key)
+    cdn_handler.upload_file(build_log_file, s3_commit_key+'/build_log.json', 0)
 
     # Download the project.json file for this repo (create it if doesn't exist) and update it
-    project = {}
-    print("Getting {0}...".format(project_url))
-    try:
-        project = json.loads(get_url(project_url))
-    except Exception as e:
-        print("FAILED: {0}".format(e.message))
-    finally:
-        print('finished.')
+    project_json_key = 'u/{0}/{1}/project.json'.format(owner_name, repo_name)
+    project_json = cdn_handler.get_json(project_json_key)
 
-    project['user'] = user
-    project['repo'] = repo
-    project['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(user, repo)
+    project_json['user'] = owner_name
+    project_json['repo'] = repo_name
+    project_json['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(owner_name, repo_name)
     
-    item = {
-        'id': commit,
+    commit = {
+        'id': commit_id,
         'created_at': job['created_at'],
         'status': job['status'],
         'success': job['success'],
@@ -130,34 +110,18 @@ def handle(event, context):
         'ended_at': None
     }
     if 'started_at' in job:
-        item['started_at'] = job['started_at']
+        commit['started_at'] = job['started_at']
     if 'ended_at' in job:
-        item['ended_at'] = job['ended_at']
+        commit['ended_at'] = job['ended_at']
 
-    if 'commits' not in project:
-        project['commits'] = []
-    print("BEFORE APPEND:")
-    print(project['commits'])
-    project['commits'].append(item)
-    print("AFTER APPEND:")
-    print(project['commits'])
+    if 'commits' not in project_json:
+        project_json['commits'] = []
+    project_json['commits'].append(commit)
 
     project_file = os.path.join(tempfile.gettempdir(), 'project.json')
-    write_file(project_file, project)
-    bucket.upload_file(project_file, s3_repo_key + '/project.json',
-                       ExtraArgs={'ContentType': 'application/json', 'CacheControl': 'max-age=0'})
-    print('Uploaded the following content from {0} to {1}/project.json'.format(project_file, s3_repo_key))
-    print(project)
+    write_file(project_file, project_json)
+    cdn_handler.upload_file(project_file, project_json_key, 0)
 
-    print('Finished deploying to cdn_bucket.')
+    print('Finished deploying to cdn_bucket. Done.')
 
-    print('Triggering Door43 Deployer')
-    url = '{0}/door43/deploy'.format(env_vars['api_url'])
-    headers = {"content-type": "application/json"}
-    print('Making request to {0} with payload:'.format(url))
-    print(job)
-    response = requests.post(url, json=job, headers=headers)
-    print("Response from deploy:")
-    print(response)
-    print('finished.')
 
