@@ -73,6 +73,7 @@ def handle(event, context):
     build_log_json['ended_at'] = job['ended_at']
     build_log_json['success'] = job['success']
     build_log_json['status'] = job['status']
+    build_log_json['message'] = job['message']
 
     if 'log' in job and job['log']:
         build_log_json['log'] = job['log']
