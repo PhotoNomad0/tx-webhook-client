@@ -67,7 +67,7 @@ def handle(event, context):
             cdn_handler.upload_file(path, key)
 
     # Now download the existing build_log.json file, update it and upload it back to S3
-    build_log_json = cdn_handler.get_json(s3_commit_key+'/buid_log.json')
+    build_log_json = cdn_handler.get_json(s3_commit_key+'/build_log.json')
 
     build_log_json['started_at'] = job['started_at']
     build_log_json['ended_at'] = job['ended_at']
