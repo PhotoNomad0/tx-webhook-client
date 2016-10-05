@@ -17,6 +17,7 @@ from general_tools.file_utils import unzip, write_file
 from general_tools.url_utils import download_file, get_url
 from aws_tools.s3_handler import S3Handler
 
+
 def handle(event, context):
     # Getting data from payload which is the JSON that was sent from tx-manager
     if 'data' not in event:
@@ -117,7 +118,13 @@ def handle(event, context):
 
     if 'commits' not in project_json:
         project_json['commits'] = []
-    project_json['commits'].append(commit)
+
+    commits = []
+    for c in project_json['commits']:
+        if c['id'] != commit_id:
+            commits.append(c)
+    commits.append(commit)
+    project_json['commits'] = commits
 
     project_file = os.path.join(tempfile.gettempdir(), 'project.json')
     write_file(project_file, project_json)

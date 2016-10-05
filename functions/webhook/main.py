@@ -12,12 +12,11 @@ import json
 import tempfile
 import requests
 
-from general_tools.file_utils import unzip, get_files, get_subdirs, write_file, add_contents_to_zip, add_file_to_zip
+from general_tools.file_utils import unzip, get_subdirs, write_file, add_contents_to_zip, add_file_to_zip
 from general_tools.url_utils import download_file
-from door43_tools import repo_compilers
+from door43_tools import preprocessors
 from door43_tools.manifest_handler import Manifest, MetaData
 from aws_tools.s3_handler import S3Handler
-from door43_tools.bible_books import BOOK_NAMES
 
 
 def str_to_class(str):
@@ -78,9 +77,11 @@ def handle(event, context):
     pusher_username = pusher['username']
 
     # 1) Download and unzip the repo files
-    repo_dir = tempfile.mkdtemp(prefix='repo_')
-    download_repo(commit_url, repo_dir)
-    repo_dir = os.path.join(repo_dir, repo_name)
+    temp_dir = tempfile.mkdtemp(prefix='repo_')
+    download_repo(commit_url, temp_dir)
+    repo_dir = os.path.join(temp_dir, repo_name)
+    if not os.path.isdir(repo_dir):
+        repo_dir = temp_dir
 
     # 2) Get the manifest file or make one if it doesn't exist based on meta.json, repo_name and file extensions
     manifest_path = os.path.join(repo_dir, 'manifest.json')
@@ -92,43 +93,37 @@ def handle(event, context):
     meta = None
     if os.path.isfile(meta_path):
         meta = MetaData(meta_path)
-    files = get_files(repo_dir, True)
-    manifest = Manifest(file_name=manifest_path, repo_name=repo_name, files=files, meta=meta)
-
-    manifest_path = os.path.join(repo_dir, 'manifest.json')
-    write_file(manifest_path, manifest.__dict__)  # Write it back out so it's using the latest manifest format
+    manifest = Manifest(file_name=manifest_path, repo_name=repo_name, files_path=repo_dir, meta=meta)
 
     # determining the repo compiler:
-    dirs = sorted(get_subdirs(repo_dir, True))
     generator = ''
-    if manifest.generator and manifest.generator['name'] and manifest.generator['name'].startswith('ts-'):
+    if manifest.generator and manifest.generator['name'] and manifest.generator['name'].startswith('ts'):
         generator = 'ts'
-    elif manifest.format == 'usfm' and manifest.project and manifest.project['id'] in BOOK_NAMES:
-        for directory in dirs:
-                try:
-                    int(directory)
-                    manifest.generator = 'ts'
-                    break
-                except Exception:
-                    continue
-    if not manifest.generator:
+    if not generator:
+        dirs = sorted(get_subdirs(repo_dir, True))
         if 'content' in dirs:
             repo_dir = os.path.join(repo_dir, 'content')
         elif 'usfm' in dirs:
             repo_dir = os.path.join(repo_dir, 'usfm')
 
-    input_format = manifest.format
+    manifest_path = os.path.join(repo_dir, 'manifest.json')
+    write_file(manifest_path, manifest.__dict__)  # Write it back out so it's using the latest manifest format
 
-    print(dirs)
+    input_format = manifest.format
+    resource_type = manifest.resource['id']
+    if resource_type == 'ulb' or resource_type == 'udb':
+        resource_type = 'bible'
+
     print(generator)
     print(input_format)
     print(manifest.__dict__)
     try:
-        compiler_class = str_to_class('repo_compilers.{0}{1}RepoCompiler'.format(generator.capitalize(),
+        compiler_class = str_to_class('preprocessors.{0}{1}{2}Preprocessor'.format(generator.capitalize(),
+                                                                                    resource_type.capitalize(),
                                                                                     input_format.capitalize()))
     except AttributeError as e:
         print('Got AE: {0}'.format(e.message))
-        compiler_class = repo_compilers.RepoCompiler
+        compiler_class = preprocessors.Preprocessor
 
     print(compiler_class)
 
@@ -147,9 +142,9 @@ def handle(event, context):
     print('finished.')
 
     # 4) Upload zipped file to the S3 bucket (you may want to do some try/catch and give an error if fails back to Gogs)
-    print('Uploading {0} to {1}...'.format(zip_filepath, pre_convert_bucket))
     s3_handler = S3Handler(pre_convert_bucket)
     file_key = "preconvert/" + zip_filename
+    print('Uploading {0} to {1}/{2}...'.format(zip_filepath, pre_convert_bucket, file_key))
     s3_handler.upload_file(zip_filepath, file_key)
     print('finished.')
 
@@ -159,6 +154,8 @@ def handle(event, context):
     tx_manager_job_url = api_url + '/tx/job'
     identifier = "{0}/{1}/{2}".format(repo_owner, repo_name,
                                       commit_id[:10])  # The way to know which repo/commit goes to this job request
+    if input_format == 'markdown':
+        input_format = 'md'
     payload = {
         "identifier": identifier,
         "user_token": gogs_user_token,
