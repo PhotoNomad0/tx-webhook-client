@@ -7,17 +7,25 @@
 from __future__ import print_function
 
 import os
+import sys
 import json
 import tempfile
 import requests
 
-from glob import glob
-from general_tools.file_utils import unzip, get_files, write_file, add_file_to_zip
+from general_tools.file_utils import unzip, get_files, get_subdirs, write_file, add_contents_to_zip, add_file_to_zip
 from general_tools.url_utils import download_file
-from general_tools.class_utils import str_to_class
 from door43_tools import repo_compilers
-from door43_tools.manifest_handler import Manifest
+from door43_tools.manifest_handler import Manifest, MetaData
 from aws_tools.s3_handler import S3Handler
+from door43_tools.bible_books import BOOK_NAMES
+
+
+def str_to_class(str):
+    """
+    Gets a class from a string.
+    :param str|unicode str: The string of the class name
+    """
+    return reduce(getattr, str.split("."), sys.modules[__name__])
 
 
 def download_repo(commit_url, repo_dir):
@@ -72,26 +80,57 @@ def handle(event, context):
     # 1) Download and unzip the repo files
     repo_dir = tempfile.mkdtemp(prefix='repo_')
     download_repo(commit_url, repo_dir)
+    repo_dir = os.path.join(repo_dir, repo_name)
 
-    # 2) Get the manifest file or make one if it doesn't exist based on repo_name and file extensions
+    # 2) Get the manifest file or make one if it doesn't exist based on meta.json, repo_name and file extensions
     manifest_path = os.path.join(repo_dir, 'manifest.json')
-    try:
-        manifest = Manifest(manifest_path)
-    except Exception:
-        manifest = Manifest.create_manifest_from_repo_name_and_files(repo_name, get_files(repo_dir, True))
+    if not os.path.isfile(manifest_path):
+        manifest_path = os.path.join(repo_dir, 'project.json')
+        if not os.path.isfile(manifest_path):
+            manifest_path = None
+    meta_path = os.path.join(repo_dir, 'meta.json')
+    meta = None
+    if os.path.isfile(meta_path):
+        meta = MetaData(meta_path)
+    files = get_files(repo_dir, True)
+    manifest = Manifest(file_name=manifest_path, repo_name=repo_name, files=files, meta=meta)
 
+    manifest_path = os.path.join(repo_dir, 'manifest.json')
     write_file(manifest_path, manifest.__dict__)  # Write it back out so it's using the latest manifest format
 
     # determining the repo compiler:
+    dirs = sorted(get_subdirs(repo_dir, True))
     generator = ''
     if manifest.generator and manifest.generator['name'] and manifest.generator['name'].startswith('ts-'):
         generator = 'ts'
+    elif manifest.format == 'usfm' and manifest.project and manifest.project['id'] in BOOK_NAMES:
+        for directory in dirs:
+                try:
+                    int(directory)
+                    manifest.generator = 'ts'
+                    break
+                except Exception:
+                    continue
+    if not manifest.generator:
+        if 'content' in dirs:
+            repo_dir = os.path.join(repo_dir, 'content')
+        elif 'usfm' in dirs:
+            repo_dir = os.path.join(repo_dir, 'usfm')
+
     input_format = manifest.format
+
+    print(dirs)
+    print(generator)
+    print(input_format)
+    print(manifest.__dict__)
     try:
         compiler_class = str_to_class('repo_compilers.{0}{1}RepoCompiler'.format(generator.capitalize(),
                                                                                     input_format.capitalize()))
-    except AttributeError:
+    except AttributeError as e:
+        print('Got AE: {0}'.format(e.message))
         compiler_class = repo_compilers.RepoCompiler
+
+    print(compiler_class)
 
     # merge the source files with the template
     output_dir = tempfile.mkdtemp(prefix='output_')
@@ -101,11 +140,9 @@ def handle(event, context):
     # 3) Zip up the massaged files
     zip_filename = context.aws_request_id + '.zip'  # context.aws_request_id is a unique ID for this lambda call, so using it to not conflict with other requests
     zip_filepath = os.path.join(tempfile.gettempdir(), zip_filename)
-    files = glob(os.path.join(output_dir, '*'))
     print('Zipping files from {0} to {1}...'.format(output_dir, zip_filepath))
-    for filename in files:
-        add_file_to_zip(zip_filepath, filename, os.path.basename(filename))
-    if os.path.isfile(manifest_path):
+    add_contents_to_zip(zip_filepath, output_dir)
+    if os.path.isfile(manifest_path) and not os.path.isfile(os.path.join(output_dir, 'manifest.json')):
         add_file_to_zip(zip_filepath, manifest_path, 'manifest.json')
     print('finished.')
 
