@@ -194,8 +194,37 @@ def handle(event, context):
         if 'job' not in json_data:
             raise Exception('tX Manager did not return any info about the job request.')
 
+        job = json_data['job']
+        cdn_handler = S3Handler(cdn_bucket)
+
+        # Download the project.json file for this repo (create it if doesn't exist) and update it
+        project_json_key = 'u/{0}/{1}/project.json'.format(repo_owner, repo_name)
+        project_json = cdn_handler.get_json(project_json_key)
+        project_json['user'] = repo_owner
+        project_json['repo'] = repo_name
+        project_json['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(repo_owner, repo_name)
+        commit = {
+            'id': commit_id,
+            'created_at': job['created_at'],
+            'status': job['status'],
+            'success': None,
+            'started_at': None,
+            'ended_at': None
+        }
+        if 'commits' not in project_json:
+            project_json['commits'] = []
+        commits = []
+        for c in project_json['commits']:
+            if c['id'] != commit_id:
+                commits.append(c)
+        commits.append(commit)
+        project_json['commits'] = commits
+        project_file = os.path.join(tempfile.gettempdir(), 'project.json')
+        write_file(project_file, project_json)
+        cdn_handler.upload_file(project_file, project_json_key, 0)
+
         # Compile data for build_log.json
-        build_log_json = json_data['job']
+        build_log_json = job
         build_log_json['repo_name'] = repo_name
         build_log_json['repo_owner'] = repo_owner
         build_log_json['commit_id'] = commit_id
@@ -205,7 +234,6 @@ def handle(event, context):
         build_log_json['commit_message'] = commit_message
 
         # Upload build_log.json and manifest.json to S3:
-        cdn_handler = S3Handler(cdn_bucket)
         s3_commit_key = 'u/{0}'.format(identifier)
         for obj in cdn_handler.get_objects(prefix=s3_commit_key):
             cdn_handler.delete_file(obj.key)

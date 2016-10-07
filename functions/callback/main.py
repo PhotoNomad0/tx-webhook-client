@@ -50,43 +50,13 @@ def handle(event, context):
                 key = s3_commit_key + path.replace(unzip_dir, '')
                 print('Uploading {0} to {1}'.format(f, key))
                 cdn_handler.upload_file(path, key)
-        
-        # Now download the existing build_log.json file, update it and upload it back to S3
-        build_log_json = cdn_handler.get_json(s3_commit_key + '/build_log.json')
-        
-        build_log_json['started_at'] = job['started_at']
-        build_log_json['ended_at'] = job['ended_at']
-        build_log_json['success'] = job['success']
-        build_log_json['status'] = job['status']
-        build_log_json['message'] = job['message']
-        
-        if 'log' in job and job['log']:
-            build_log_json['log'] = job['log']
-        else:
-            build_log_json['log'] = []
-        
-        if 'warnings' in job and job['warnings']:
-            build_log_json['warnings'] = job['warnings']
-        else:
-            build_log_json['warnings'] = []
-        
-        if 'errors' in job and job['errors']:
-            build_log_json['errors'] = job['errors']
-        else:
-            build_log_json['errors'] = []
-        
-        build_log_file = os.path.join(tempfile.gettempdir(), 'build_log_finished.json')
-        write_file(build_log_file, build_log_json)
-        cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
-        
+
         # Download the project.json file for this repo (create it if doesn't exist) and update it
         project_json_key = 'u/{0}/{1}/project.json'.format(owner_name, repo_name)
         project_json = cdn_handler.get_json(project_json_key)
-        
         project_json['user'] = owner_name
         project_json['repo'] = repo_name
         project_json['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(owner_name, repo_name)
-        
         commit = {
             'id': commit_id,
             'created_at': job['created_at'],
@@ -99,22 +69,44 @@ def handle(event, context):
             commit['started_at'] = job['started_at']
         if 'ended_at' in job:
             commit['ended_at'] = job['ended_at']
-        
         if 'commits' not in project_json:
             project_json['commits'] = []
-        
         commits = []
         for c in project_json['commits']:
             if c['id'] != commit_id:
                 commits.append(c)
         commits.append(commit)
         project_json['commits'] = commits
-        
         project_file = os.path.join(tempfile.gettempdir(), 'project.json')
         write_file(project_file, project_json)
         cdn_handler.upload_file(project_file, project_json_key, 0)
-        
+
+        # Now download the existing build_log.json file, update it and upload it back to S3
+        build_log_json = cdn_handler.get_json(s3_commit_key + '/build_log.json')
+        build_log_json['started_at'] = job['started_at']
+        build_log_json['ended_at'] = job['ended_at']
+        build_log_json['success'] = job['success']
+        build_log_json['status'] = job['status']
+        build_log_json['message'] = job['message']
+        if 'log' in job and job['log']:
+            build_log_json['log'] = job['log']
+        else:
+            build_log_json['log'] = []
+        if 'warnings' in job and job['warnings']:
+            build_log_json['warnings'] = job['warnings']
+        else:
+            build_log_json['warnings'] = []
+        if 'errors' in job and job['errors']:
+            build_log_json['errors'] = job['errors']
+        else:
+            build_log_json['errors'] = []
+        build_log_file = os.path.join(tempfile.gettempdir(), 'build_log_finished.json')
+        write_file(build_log_file, build_log_json)
+        cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
+
         print('Finished deploying to cdn_bucket. Done.')
+
+        return build_log_json
     except Exception as e:
         print("Failed doing callback:")
         print(e)
