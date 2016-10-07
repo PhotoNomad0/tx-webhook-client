@@ -45,191 +45,178 @@ def download_repo(commit_url, repo_dir):
 
 
 def handle(event, context):
-    # Get vars and data
-    env_vars = retrieve(event, 'vars', 'payload')
-    api_url = retrieve(env_vars, 'api_url', 'Environment Vars')
-    pre_convert_bucket = retrieve(env_vars, 'pre_convert_bucket', 'Environment Vars')
-    cdn_bucket = retrieve(env_vars, 'cdn_bucket', 'Environment Vars')
-    gogs_url = retrieve(env_vars, 'gogs_url', 'Environment Vars')
-    gogs_user_token = retrieve(env_vars, 'gogs_user_token', 'Environment Vars')
-    repo_commit = retrieve(event, 'data', 'payload')
-
-    commit_id = repo_commit['after']
-    commit = None
-    for commit in repo_commit['commits']:
-        if commit['id'] == commit_id:
-            break
-
-    commit_url = commit['url']
-    commit_message = commit['message']
-
-    if gogs_url not in commit_url:
-        raise Exception('Repos can only belong to {0} to use this webhook client.'.format(gogs_url))
-
-    repo_name = repo_commit['repository']['name']
-    repo_owner = repo_commit['repository']['owner']['username']
-    compare_url = repo_commit['compare_url']
-
-    if 'pusher' in repo_commit:
-        pusher = repo_commit['pusher']
-    else:
-        pusher = {'username': commit['author']['username']}
-    pusher_username = pusher['username']
-
-    # 1) Download and unzip the repo files
-    temp_dir = tempfile.mkdtemp(prefix='repo_')
-    download_repo(commit_url, temp_dir)
-    repo_dir = os.path.join(temp_dir, repo_name)
-    if not os.path.isdir(repo_dir):
-        repo_dir = temp_dir
-
-    # 2) Get the manifest file or make one if it doesn't exist based on meta.json, repo_name and file extensions
-    manifest_path = os.path.join(repo_dir, 'manifest.json')
-    if not os.path.isfile(manifest_path):
-        manifest_path = os.path.join(repo_dir, 'project.json')
-        if not os.path.isfile(manifest_path):
-            manifest_path = None
-    meta_path = os.path.join(repo_dir, 'meta.json')
-    meta = None
-    if os.path.isfile(meta_path):
-        meta = MetaData(meta_path)
-    manifest = Manifest(file_name=manifest_path, repo_name=repo_name, files_path=repo_dir, meta=meta)
-
-    # determining the repo compiler:
-    generator = ''
-    if manifest.generator and manifest.generator['name'] and manifest.generator['name'].startswith('ts'):
-        generator = 'ts'
-    if not generator:
-        dirs = sorted(get_subdirs(repo_dir, True))
-        if 'content' in dirs:
-            repo_dir = os.path.join(repo_dir, 'content')
-        elif 'usfm' in dirs:
-            repo_dir = os.path.join(repo_dir, 'usfm')
-
-    manifest_path = os.path.join(repo_dir, 'manifest.json')
-    write_file(manifest_path, manifest.__dict__)  # Write it back out so it's using the latest manifest format
-
-    input_format = manifest.format
-    resource_type = manifest.resource['id']
-    if resource_type == 'ulb' or resource_type == 'udb':
-        resource_type = 'bible'
-
-    print(generator)
-    print(input_format)
-    print(manifest.__dict__)
     try:
-        compiler_class = str_to_class('preprocessors.{0}{1}{2}Preprocessor'.format(generator.capitalize(),
-                                                                                    resource_type.capitalize(),
-                                                                                    input_format.capitalize()))
-    except AttributeError as e:
-        print('Got AE: {0}'.format(e.message))
-        compiler_class = preprocessors.Preprocessor
+        # Get vars and data
+        env_vars = retrieve(event, 'vars', 'payload')
+        api_url = retrieve(env_vars, 'api_url', 'Environment Vars')
+        pre_convert_bucket = retrieve(env_vars, 'pre_convert_bucket', 'Environment Vars')
+        cdn_bucket = retrieve(env_vars, 'cdn_bucket', 'Environment Vars')
+        gogs_url = retrieve(env_vars, 'gogs_url', 'Environment Vars')
+        gogs_user_token = retrieve(env_vars, 'gogs_user_token', 'Environment Vars')
+        repo_commit = retrieve(event, 'data', 'payload')
 
-    print(compiler_class)
+        commit_id = repo_commit['after']
+        commit = None
+        for commit in repo_commit['commits']:
+            if commit['id'] == commit_id:
+                break
 
-    # merge the source files with the template
-    output_dir = tempfile.mkdtemp(prefix='output_')
-    compiler = compiler_class(manifest, repo_dir, output_dir)
-    compiler.run()
+        commit_url = commit['url']
+        commit_message = commit['message']
 
-    # 3) Zip up the massaged files
-    zip_filename = context.aws_request_id + '.zip'  # context.aws_request_id is a unique ID for this lambda call, so using it to not conflict with other requests
-    zip_filepath = os.path.join(tempfile.gettempdir(), zip_filename)
-    print('Zipping files from {0} to {1}...'.format(output_dir, zip_filepath))
-    add_contents_to_zip(zip_filepath, output_dir)
-    if os.path.isfile(manifest_path) and not os.path.isfile(os.path.join(output_dir, 'manifest.json')):
-        add_file_to_zip(zip_filepath, manifest_path, 'manifest.json')
-    print('finished.')
+        if gogs_url not in commit_url:
+            raise Exception('Repos can only belong to {0} to use this webhook client.'.format(gogs_url))
 
-    # 4) Upload zipped file to the S3 bucket (you may want to do some try/catch and give an error if fails back to Gogs)
-    s3_handler = S3Handler(pre_convert_bucket)
-    file_key = "preconvert/" + zip_filename
-    print('Uploading {0} to {1}/{2}...'.format(zip_filepath, pre_convert_bucket, file_key))
-    s3_handler.upload_file(zip_filepath, file_key)
-    print('finished.')
+        repo_name = repo_commit['repository']['name']
+        repo_owner = repo_commit['repository']['owner']['username']
+        compare_url = repo_commit['compare_url']
 
-    # Send job request to tx-manager
-    source_url = 'https://s3-us-west-2.amazonaws.com/{0}/{1}'.format(pre_convert_bucket,
-                                                                     file_key)  # we use us-west-2 for our s3 buckets
-    tx_manager_job_url = api_url + '/tx/job'
-    identifier = "{0}/{1}/{2}".format(repo_owner, repo_name,
-                                      commit_id[:10])  # The way to know which repo/commit goes to this job request
-    if input_format == 'markdown':
-        input_format = 'md'
-    payload = {
-        "identifier": identifier,
-        "user_token": gogs_user_token,
-        "resource_type": manifest.resource['id'],
-        "input_format": input_format,
-        "output_format": "html",
-        "source": source_url,
-        "callback": api_url + '/client/callback'
-    }
-    headers = {"content-type": "application/json"}
+        if 'pusher' in repo_commit:
+            pusher = repo_commit['pusher']
+        else:
+            pusher = {'username': commit['author']['username']}
+        pusher_username = pusher['username']
 
-    print('Making request to tx-Manager URL {0} with payload:'.format(tx_manager_job_url))
-    print(payload)
-    print('...')
-    response = requests.post(tx_manager_job_url, json=payload, headers=headers)
-    print('finished.')
+        # 1) Download and unzip the repo files
+        temp_dir = tempfile.mkdtemp(prefix='repo_')
+        download_repo(commit_url, temp_dir)
+        repo_dir = os.path.join(temp_dir, repo_name)
+        if not os.path.isdir(repo_dir):
+            repo_dir = temp_dir
 
-    # for testing
-    print('tx-manager response:')
-    print(response)
+        # 2) Get the manifest file or make one if it doesn't exist based on meta.json, repo_name and file extensions
+        manifest_path = os.path.join(repo_dir, 'manifest.json')
+        if not os.path.isfile(manifest_path):
+            manifest_path = os.path.join(repo_dir, 'project.json')
+            if not os.path.isfile(manifest_path):
+                manifest_path = None
+        meta_path = os.path.join(repo_dir, 'meta.json')
+        meta = None
+        if os.path.isfile(meta_path):
+            meta = MetaData(meta_path)
+        manifest = Manifest(file_name=manifest_path, repo_name=repo_name, files_path=repo_dir, meta=meta)
 
-    if not response:
-        raise Exception('Bad request: unable to convert')
+        # determining the repo compiler:
+        generator = ''
+        if manifest.generator and manifest.generator['name'] and manifest.generator['name'].startswith('ts'):
+            generator = 'ts'
+        if not generator:
+            dirs = sorted(get_subdirs(repo_dir, True))
+            if 'content' in dirs:
+                repo_dir = os.path.join(repo_dir, 'content')
+            elif 'usfm' in dirs:
+                repo_dir = os.path.join(repo_dir, 'usfm')
 
-    if 'errorMessage' in response:
-        raise Exception('Bad request: {0}'.format(response['errorMessage']))
+        manifest_path = os.path.join(repo_dir, 'manifest.json')
+        write_file(manifest_path, manifest.__dict__)  # Write it back out so it's using the latest manifest format
 
-    json_data = json.loads(response.text)
+        input_format = manifest.format
+        resource_type = manifest.resource['id']
+        if resource_type == 'ulb' or resource_type == 'udb':
+            resource_type = 'bible'
 
-    if 'errorMessage' in json_data:
-        raise Exception('Bad request: {0}'.format(json_data['errorMessage']))
+        print(generator)
+        print(input_format)
+        print(manifest.__dict__)
+        try:
+            compiler_class = str_to_class('preprocessors.{0}{1}{2}Preprocessor'.format(generator.capitalize(),
+                                                                                       resource_type.capitalize(),
+                                                                                       input_format.capitalize()))
+        except AttributeError as e:
+            print('Got AE: {0}'.format(e.message))
+            compiler_class = preprocessors.Preprocessor
 
-    if 'job' not in json_data:
-        raise Exception('Bad request: tX Manager did not return any info about the job request.')
-    build_log_json = json_data['job']
+        print(compiler_class)
 
-    build_log_json['repo_name'] = repo_name
-    build_log_json['repo_owner'] = repo_owner
-    build_log_json['commit_id'] = commit_id
-    build_log_json['committed_by'] = pusher_username
-    build_log_json['commit_url'] = commit_url
-    build_log_json['compare_url'] = compare_url
-    build_log_json['commit_message'] = commit_message
+        # merge the source files with the template
+        output_dir = tempfile.mkdtemp(prefix='output_')
+        compiler = compiler_class(manifest, repo_dir, output_dir)
+        compiler.run()
 
-    if 'errorMessage' in json_data:
-        build_log_json['status'] = 'failed'
-        build_log_json['message'] = json_data['errorMessage']
+        # 3) Zip up the massaged files
+        zip_filename = context.aws_request_id + '.zip'  # context.aws_request_id is a unique ID for this lambda call, so using it to not conflict with other requests
+        zip_filepath = os.path.join(tempfile.gettempdir(), zip_filename)
+        print('Zipping files from {0} to {1}...'.format(output_dir, zip_filepath))
+        add_contents_to_zip(zip_filepath, output_dir)
+        if os.path.isfile(manifest_path) and not os.path.isfile(os.path.join(output_dir, 'manifest.json')):
+            add_file_to_zip(zip_filepath, manifest_path, 'manifest.json')
+        print('finished.')
 
-    # Upload files to S3:
+        # 4) Upload zipped file to the S3 bucket (you may want to do some try/catch and give an error if fails back to Gogs)
+        s3_handler = S3Handler(pre_convert_bucket)
+        file_key = "preconvert/" + zip_filename
+        print('Uploading {0} to {1}/{2}...'.format(zip_filepath, pre_convert_bucket, file_key))
+        s3_handler.upload_file(zip_filepath, file_key)
+        print('finished.')
 
-    # S3 location vars
-    cdn_handler = S3Handler(cdn_bucket)
-    s3_commit_key = 'u/{0}'.format(identifier)
+        # Send job request to tx-manager
+        source_url = 'https://s3-us-west-2.amazonaws.com/{0}/{1}'.format(pre_convert_bucket,
+                                                                         file_key)  # we use us-west-2 for our s3 buckets
+        tx_manager_job_url = api_url + '/tx/job'
+        identifier = "{0}/{1}/{2}".format(repo_owner, repo_name,
+                                          commit_id[:10])  # The way to know which repo/commit goes to this job request
+        if input_format == 'markdown':
+            input_format = 'md'
+        payload = {
+            "identifier": identifier,
+            "user_token": gogs_user_token,
+            "resource_type": manifest.resource['id'],
+            "input_format": input_format,
+            "output_format": "html",
+            "source": source_url,
+            "callback": api_url + '/client/callback'
+        }
+        headers = {"content-type": "application/json"}
 
-    # Remove everything in the bucket with the s3_commit_key prefix so old files are removed, if any
-    for obj in cdn_handler.get_objects(prefix=s3_commit_key):
-        cdn_handler.delete_file(obj.key)
+        print('Making request to tx-Manager URL {0} with payload:'.format(tx_manager_job_url))
+        print(payload)
+        response = requests.post(tx_manager_job_url, json=payload, headers=headers)
+        print('finished.')
 
-    # Make a build_log.json file with this repo and commit data for later processing, upload to S3
-    build_log_file = os.path.join(tempfile.gettempdir(), 'build_log_request.json')
-    write_file(build_log_file, build_log_json)
-    cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
+        # for testing
+        print('tx-manager response:')
+        print(response)
+        print(response.status_code)
 
-    # Upload the manifest.json file to the cdn_bucket if it exists
-    if os.path.isfile(manifest_path):
+        if response.status_code != requests.codes.ok:
+            message = response.reason
+            if response.text:
+                try:
+                    json_data = json.loads(response.text)
+                    if 'errorMessage' in json_data:
+                        message = json_data['errorMessage']
+                except Exception:
+                    pass
+            raise Exception('{0} - {1}'.format(response.status_code, message))
+
+        json_data = json.loads(response.text)
+
+        if 'job' not in json_data:
+            raise Exception('tX Manager did not return any info about the job request.')
+
+        # Compile data for build_log.json
+        build_log_json = json_data['job']
+        build_log_json['repo_name'] = repo_name
+        build_log_json['repo_owner'] = repo_owner
+        build_log_json['commit_id'] = commit_id
+        build_log_json['committed_by'] = pusher_username
+        build_log_json['commit_url'] = commit_url
+        build_log_json['compare_url'] = compare_url
+        build_log_json['commit_message'] = commit_message
+
+        # Upload build_log.json and manifest.json to S3:
+        cdn_handler = S3Handler(cdn_bucket)
+        s3_commit_key = 'u/{0}'.format(identifier)
+        for obj in cdn_handler.get_objects(prefix=s3_commit_key):
+            cdn_handler.delete_file(obj.key)
+        build_log_file = os.path.join(tempfile.gettempdir(), 'build_log.json')
+        write_file(build_log_file, build_log_json)
+        cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
-    # If there was an error, in order to trigger a 400 error in the API Gateway, we need to raise an
-    # exception with the returned 'errorMessage' because the API Gateway needs to see 'Bad Request:' in the string
-    if 'errorMessage' in json_data:
-        raise Exception('Bad Request: {0}'.format(json_data['errorMessage']))
-
-    return build_log_json
-
+        return build_log_json
+    except Exception as e:
+        raise Exception('Bad Request: {0}'.format(e))
 
 def retrieve(dictionary, key, dict_name=None):
     """
@@ -243,4 +230,4 @@ def retrieve(dictionary, key, dict_name=None):
     if key in dictionary:
         return dictionary[key]
     dict_name = "dictionary" if dict_name is None else dict_name
-    raise Exception("Bad Request: {k} not found in {d}".format(k=repr(key), d=dict_name))
+    raise Exception('{k} not found in {d}'.format(k=repr(key), d=dict_name))
