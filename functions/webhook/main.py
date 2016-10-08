@@ -272,7 +272,7 @@ def handle(event, context):
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
         if len(job['errors']) > 0:
-            raise Exception(job['errors'].join('; '))
+            raise Exception('; '.join(job['errors']))
         else:
             return build_log_json
     except Exception as e:
