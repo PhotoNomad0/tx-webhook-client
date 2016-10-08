@@ -12,6 +12,7 @@ import json
 import tempfile
 import requests
 
+from datetime import datetime
 from general_tools.file_utils import unzip, get_subdirs, write_file, add_contents_to_zip, add_file_to_zip
 from general_tools.url_utils import download_file
 from door43_tools import preprocessors
@@ -178,23 +179,34 @@ def handle(event, context):
         print(response)
         print(response.status_code)
 
+        job = {
+            'message': 'Conversion started...',
+            'status': 'requested',
+            'success': None,
+            'created_at': datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+
         if response.status_code != requests.codes.ok:
-            message = response.reason
+            job['status'] = 'failed'
+            job['success'] = False
+            job['message'] = response.reason
             if response.text:
                 try:
                     json_data = json.loads(response.text)
                     if 'errorMessage' in json_data:
-                        message = json_data['errorMessage']
+                        job['message'] = json_data['errorMessage']
                 except Exception:
                     pass
-            raise Exception('{0} - {1}'.format(response.status_code, message))
+        else:
+            json_data = json.loads(response.text)
 
-        json_data = json.loads(response.text)
+            if 'job' not in json_data:
+                job['status'] = 'failed'
+                job['success'] = False
+                job['message'] = 'tX Manager did not return any info about the job request.'
+            else:
+                job = json_data['job']
 
-        if 'job' not in json_data:
-            raise Exception('tX Manager did not return any info about the job request.')
-
-        job = json_data['job']
         cdn_handler = S3Handler(cdn_bucket)
 
         # Download the project.json file for this repo (create it if doesn't exist) and update it
@@ -207,7 +219,7 @@ def handle(event, context):
             'id': commit_id,
             'created_at': job['created_at'],
             'status': job['status'],
-            'success': None,
+            'success': job['success'],
             'started_at': None,
             'ended_at': None
         }
@@ -242,7 +254,10 @@ def handle(event, context):
         cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
-        return build_log_json
+        if job['success'] != False:
+            return build_log_json
+        else:
+            raise Exception(job['message'])
     except Exception as e:
         raise Exception('Bad Request: {0}'.format(e))
 
