@@ -181,6 +181,7 @@ def handle(event, context):
         print(response)
         print(response.status_code)
 
+        # Fake job in case tx-manager returns an error, can still build the build_log.json
         job = {
             'job_id': None,
             'identifier': identifier,
@@ -261,7 +262,6 @@ def handle(event, context):
         build_log_json['commit_url'] = commit_url
         build_log_json['compare_url'] = compare_url
         build_log_json['commit_message'] = commit_message
-
         # Upload build_log.json and manifest.json to S3:
         s3_commit_key = 'u/{0}'.format(identifier)
         for obj in cdn_handler.get_objects(prefix=s3_commit_key):
@@ -269,6 +269,7 @@ def handle(event, context):
         build_log_file = os.path.join(tempfile.gettempdir(), 'build_log.json')
         write_file(build_log_file, build_log_json)
         cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
+
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
         if len(job['errors']) > 0:
@@ -277,6 +278,7 @@ def handle(event, context):
             return build_log_json
     except Exception as e:
         raise Exception('Bad Request: {0}'.format(e))
+
 
 def retrieve(dictionary, key, dict_name=None):
     """
