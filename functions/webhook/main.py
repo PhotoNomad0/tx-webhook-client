@@ -192,18 +192,22 @@ def handle(event, context):
             'message': 'Conversion started...',
             'status': 'requested',
             'success': None,
-            'created_at': datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            'created_at': datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            'log': [],
+            'warnings': [],
+            'errors': []
         }
 
         if response.status_code != requests.codes.ok:
             job['status'] = 'failed'
             job['success'] = False
-            job['message'] = response.reason
+            job['message'] = 'Failed to convert'
+            job['errors'].append(response.reason)
             if response.text:
                 try:
                     json_data = json.loads(response.text)
                     if 'errorMessage' in json_data:
-                        job['message'] = json_data['errorMessage']
+                        job['errors'].append(json_data['errorMessage'])
                 except Exception:
                     pass
         else:
@@ -212,7 +216,8 @@ def handle(event, context):
             if 'job' not in json_data:
                 job['status'] = 'failed'
                 job['success'] = False
-                job['message'] = 'tX Manager did not return any info about the job request.'
+                job['message'] = 'Failed to convert'
+                job['errors'].append('tX Manager did not return any info about the job request.')
             else:
                 job = json_data['job']
 
@@ -263,10 +268,10 @@ def handle(event, context):
         cdn_handler.upload_file(build_log_file, s3_commit_key + '/build_log.json', 0)
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
-        if job['success'] != False:
-            return build_log_json
-        else:
+        if len(job['errors']) > 0:
             raise Exception(job['message'])
+        else:
+            return build_log_json
     except Exception as e:
         raise Exception('Bad Request: {0}'.format(e))
 
