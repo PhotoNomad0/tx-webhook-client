@@ -61,6 +61,7 @@ def handle(event, context):
         for commit in repo_commit['commits']:
             if commit['id'] == commit_id:
                 break
+        commit_id = commit_id[:10]  # Only use the short form
 
         commit_url = commit['url']
         commit_message = commit['message']
@@ -156,7 +157,7 @@ def handle(event, context):
         callback_url = api_url + '/client/callback'
         tx_manager_job_url = api_url + '/tx/job'
         identifier = "{0}/{1}/{2}".format(repo_owner, repo_name,
-                                          commit_id[:10])  # The way to know which repo/commit goes to this job request
+                                          commit_id)  # The way to know which repo/commit goes to this job request
         if input_format == 'markdown':
             input_format = 'md'
         payload = {
@@ -224,7 +225,7 @@ def handle(event, context):
         project_json['repo'] = repo_name
         project_json['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(repo_owner, repo_name)
         commit = {
-            'id': commit_id[:10],
+            'id': commit_id,
             'created_at': job['created_at'],
             'status': job['status'],
             'success': job['success'],
@@ -247,7 +248,7 @@ def handle(event, context):
         build_log_json = job
         build_log_json['repo_name'] = repo_name
         build_log_json['repo_owner'] = repo_owner
-        build_log_json['commit_id'] = commit_id[:10]
+        build_log_json['commit_id'] = commit_id
         build_log_json['committed_by'] = pusher_username
         build_log_json['commit_url'] = commit_url
         build_log_json['compare_url'] = compare_url
