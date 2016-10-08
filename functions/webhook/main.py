@@ -201,15 +201,18 @@ def handle(event, context):
         if response.status_code != requests.codes.ok:
             job['status'] = 'failed'
             job['success'] = False
-            job['message'] = 'Failed to convert'
-            job['errors'].append(response.reason)
+            job['message'] = 'Failed to convert!'
+            error = ''
             if response.text:
                 try:
                     json_data = json.loads(response.text)
                     if 'errorMessage' in json_data:
-                        job['errors'].append(json_data['errorMessage'])
+                        error = json_data['errorMessage']
+                        if error.startswith('Bad Request: '):
+                            error = error[len('Bad Request: '):]
                 except Exception:
                     pass
+            job['errors'].append(error)
         else:
             json_data = json.loads(response.text)
 
@@ -269,7 +272,7 @@ def handle(event, context):
         cdn_handler.upload_file(manifest_path, s3_commit_key + '/manifest.json', 0)
 
         if len(job['errors']) > 0:
-            raise Exception(job['message'])
+            raise Exception(job['errors'].join('; '))
         else:
             return build_log_json
     except Exception as e:
