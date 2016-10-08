@@ -153,6 +153,7 @@ def handle(event, context):
         # Send job request to tx-manager
         source_url = 'https://s3-us-west-2.amazonaws.com/{0}/{1}'.format(pre_convert_bucket,
                                                                          file_key)  # we use us-west-2 for our s3 buckets
+        callback_url = api_url + '/client/callback'
         tx_manager_job_url = api_url + '/tx/job'
         identifier = "{0}/{1}/{2}".format(repo_owner, repo_name,
                                           commit_id[:10])  # The way to know which repo/commit goes to this job request
@@ -165,7 +166,7 @@ def handle(event, context):
             "input_format": input_format,
             "output_format": "html",
             "source": source_url,
-            "callback": api_url + '/client/callback'
+            "callback": callback_url
         }
         headers = {"content-type": "application/json"}
 
@@ -180,6 +181,13 @@ def handle(event, context):
         print(response.status_code)
 
         job = {
+            'job_id': None,
+            'identifier': identifier,
+            'resource_type': manifest.resource['id'],
+            'input_format': input_format,
+            'output_format': 'html',
+            'source': source_url,
+            'callback': callback_url,
             'message': 'Conversion started...',
             'status': 'requested',
             'success': None,
