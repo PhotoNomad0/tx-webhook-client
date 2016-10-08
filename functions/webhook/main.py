@@ -216,7 +216,7 @@ def handle(event, context):
         project_json['repo'] = repo_name
         project_json['repo_url'] = 'https://git.door43.org/{0}/{1}'.format(repo_owner, repo_name)
         commit = {
-            'id': commit_id,
+            'id': commit_id[:10],
             'created_at': job['created_at'],
             'status': job['status'],
             'success': job['success'],
@@ -239,7 +239,7 @@ def handle(event, context):
         build_log_json = job
         build_log_json['repo_name'] = repo_name
         build_log_json['repo_owner'] = repo_owner
-        build_log_json['commit_id'] = commit_id
+        build_log_json['commit_id'] = commit_id[:10]
         build_log_json['committed_by'] = pusher_username
         build_log_json['commit_url'] = commit_url
         build_log_json['compare_url'] = compare_url
