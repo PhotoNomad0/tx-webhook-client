@@ -11,13 +11,13 @@ before_install:
 install:
 - bash install-requirements.sh
 - pip install coveralls
-script: coverage run setup.py test
+script: coverage run test_setup.py test
 after_success:
 - coveralls
 deploy:
 - provider: script
   skip_cleanup: true
-  script: ./apex deploy 
+  script: ./apex deploy
   on:
     branch: develop
 - provider: script

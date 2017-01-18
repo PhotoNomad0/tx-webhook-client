@@ -1,0 +1,7 @@
+[run]
+source =
+    functions
+
+include =
+    */webhook/main.py
+    */callback/main.py

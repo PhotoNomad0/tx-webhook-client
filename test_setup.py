@@ -1,11 +1,8 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="tx-webhook-client",
-    package_dir={'webhook': 'functions/webhook',
-                 'callback': 'functions/callback'},
-    packages=['webhook', 'callback'],
-    version="0.0.1",
+    version="1.0.0",
     description="tX webhook client",
     long_description="tX webhook client",
     url="https://github.com/unfoldingWord-dev/tx-webhook-client",
@@ -14,5 +11,7 @@ setup(
     license="MIT",
     classifiers=[],
     keywords=["tx", "client"],
-    install_requires=["future", "requests"]
+    packages=find_packages(),
+    install_requires=["future", "requests"],
+    test_suite="tests"
 )
